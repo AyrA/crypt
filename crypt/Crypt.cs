@@ -56,6 +56,9 @@ namespace crypt
         }
     }
 
+    /// <summary>
+    /// provides File encryption and decryption capabilities
+    /// </summary>
     public class Crypt
     {
         [Flags]
@@ -134,6 +137,12 @@ namespace crypt
         /// </summary>
         public const string HEADER = "ACRYPT";
 
+#if DEBUG
+        /// <summary>
+        /// Creates the Hash of a stream.
+        /// </summary>
+        /// <param name="S">Input stream</param>
+        /// <returns>SHA256</returns>
         public static byte[] Hash(Stream S)
         {
             using (var Hasher = (SHA256)HashAlgorithm.Create(HASHALG))
@@ -142,6 +151,7 @@ namespace crypt
                 return Hash;
             }
         }
+#endif
 
         /// <summary>
         /// Encrypts a file

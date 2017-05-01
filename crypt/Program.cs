@@ -143,6 +143,11 @@ namespace crypt
 #endif
         }
 
+        /// <summary>
+        /// Reads a password from STDIN and masks it.
+        /// It's incompatible with stream redirection.
+        /// </summary>
+        /// <returns>User supplied password</returns>
         private static string ReadPassword()
         {
 #if DEBUG
@@ -186,6 +191,9 @@ namespace crypt
 #endif
         }
 
+        /// <summary>
+        /// Prints the help
+        /// </summary>
         private static void ShowHelp()
         {
             Console.Error.WriteLine(@"crypt {/e|/d} <input>
