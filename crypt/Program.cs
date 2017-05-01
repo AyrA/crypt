@@ -8,7 +8,17 @@ namespace crypt
     {
         static void Main(string[] args)
         {
-            args = new string[] { "/d", "\\temp\\media\\cavestory" };
+            //args = new string[] { "/e", @"C:\Temp\media\__test.mp3" };
+            args = new string[] { "/d", @"C:\Temp\media\__test.mp3.cry" };
+
+#if DEBUG
+            using (var FS = File.OpenRead(args[1]))
+            {
+                var Hash = Crypt.Hash(FS);
+                Console.Error.WriteLine(string.Join("-", Hash.Select(m => m.ToString("X2")).ToArray()));
+            }
+#endif
+
             if (args.Length == 0 || args.Contains("/?"))
             {
                 ShowHelp();
@@ -41,19 +51,20 @@ namespace crypt
                     foreach (var F in Sources)
                     {
                         Console.Error.Write($"{F}...");
-                        if (Crypt.EncryptFile(F, F + ".cry", Pass))
+                        switch (Crypt.EncryptFile(F, $"{F}.cry", Pass))
                         {
-                            if (File.Exists(F))
-                            {
-                                File.Delete(F);
-                            }
-                            Console.ForegroundColor = ConsoleColor.Green;
-                            Console.Error.WriteLine("[DONE]");
-                        }
-                        else
-                        {
-                            Console.ForegroundColor = ConsoleColor.Red;
-                            Console.Error.WriteLine("[ERROR]");
+                            case Crypt.CryptResult.Success:
+                                Console.ForegroundColor = ConsoleColor.Green;
+                                Console.Error.WriteLine("[DONE]");
+                                break;
+                            default:
+                                if (File.Exists($"{F}.cry"))
+                                {
+                                    File.Delete($"{F}.cry");
+                                }
+                                Console.ForegroundColor = ConsoleColor.Red;
+                                Console.Error.WriteLine("[ERROR]");
+                                break;
                         }
                         Console.ResetColor();
                     }
@@ -93,20 +104,22 @@ namespace crypt
                     }
                     foreach (var F in Sources)
                     {
+                        string Dest = F.Substring(0, F.Length - 4);
                         Console.Error.Write($"{F}...");
-                        if (Crypt.DecryptFile(F, F.Substring(0, F.Length - 4), Pass))
+                        switch (Crypt.DecryptFile(F, Dest, Pass))
                         {
-                            if (File.Exists(F))
-                            {
-                                File.Delete(F);
-                            }
-                            Console.ForegroundColor = ConsoleColor.Green;
-                            Console.Error.WriteLine("[DONE]");
-                        }
-                        else
-                        {
-                            Console.ForegroundColor = ConsoleColor.Red;
-                            Console.Error.WriteLine("[ERROR]");
+                            case Crypt.CryptResult.Success:
+                                Console.ForegroundColor = ConsoleColor.Green;
+                                Console.Error.WriteLine("[DONE]");
+                                break;
+                            default:
+                                if (File.Exists(Dest))
+                                {
+                                    File.Delete(Dest);
+                                }
+                                Console.ForegroundColor = ConsoleColor.Red;
+                                Console.Error.WriteLine("[ERROR]");
+                                break;
                         }
                         Console.ResetColor();
                     }
@@ -123,12 +136,17 @@ namespace crypt
             {
                 ShowHelp();
             }
+
+#if DEBUG
+            Console.Error.WriteLine("#END");
+            Console.ReadKey(true);
+#endif
         }
 
         private static string ReadPassword()
         {
 #if DEBUG
-            const string PASS="Test-1234567890";
+            const string PASS = "Test-1234567890";
             Console.Error.WriteLine(string.Empty.PadRight(PASS.Length, '*'));
             return PASS;
 #else
