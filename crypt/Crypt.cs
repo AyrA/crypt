@@ -13,6 +13,7 @@ namespace crypt
         public string Header;
         public byte[] Salt, IV, KeyHash, FileHash;
         public bool Valid;
+        public int Cycles;
 
         public void ReadFrom(Stream S)
         {
@@ -26,6 +27,7 @@ namespace crypt
                     KeyHash = BR.ReadBytes(BR.ReadInt32());
                     IV = BR.ReadBytes(BR.ReadInt32());
                     FileHash = BR.ReadBytes(BR.ReadInt32());
+                    Cycles = BR.ReadInt32();
                 }
             }
         }
@@ -42,17 +44,19 @@ namespace crypt
                 BW.Write(IV);
                 BW.Write(FileHash.Length);
                 BW.Write(FileHash);
+                BW.Write(Cycles);
                 BW.Flush();
             }
         }
 
         public int GetSize()
         {
-            return Encoding.UTF8.GetByteCount(Header) +
-                4 + Salt.Length +
-                4 + IV.Length +
-                4 + KeyHash.Length +
-                4 + FileHash.Length;
+            return Encoding.UTF8.GetByteCount(Header) + //Length of header string
+                sizeof(int) + Salt.Length +     //byte array + prefix
+                sizeof(int) + IV.Length +       //byte array + prefix
+                sizeof(int) + KeyHash.Length +  //byte array + prefix
+                sizeof(int) + FileHash.Length + //byte array + prefix
+                sizeof(int); //Cycles
         }
     }
 
@@ -73,13 +77,13 @@ namespace crypt
             /// </summary>
             Error = 1,
             /// <summary>
-            /// Source file was not found or is locked
+            /// Source stream is not readable
             /// </summary>
-            FileCantOpen = 2 | Error,
+            StreamCantRead = 2 | Error,
             /// <summary>
-            /// Can't create destination file
+            /// Output stream is not writeable
             /// </summary>
-            FileCantCreate = 4 | Error,
+            StreamCantWrite = 4 | Error,
             /// <summary>
             /// Password is invalid.
             /// Either it's wrong for decryption or not supplied for encryption
@@ -153,42 +157,76 @@ namespace crypt
         }
 #endif
 
-        /// <summary>
-        /// Encrypts a file
-        /// </summary>
-        /// <param name="Filename">Source file</param>
-        /// <param name="DestinationName">Encrypted destination</param>
-        /// <param name="Password">User supplied password</param>
-        /// <returns>true, if successfull</returns>
-        /// <remarks>Will neither delete source on success nor destination on error</remarks>
-        public static CryptResult EncryptFile(string Filename, string DestinationName, string Password)
+        private byte[] Salt;
+        private byte[] Key;
+        private int Difficulty;
+        private readonly static int MaxKeySize;
+
+        static Crypt()
         {
-            if (string.IsNullOrEmpty(Password))
+            using (var R = Rijndael.Create())
+            {
+                MaxKeySize = R.LegalKeySizes.OrderByDescending(m => m.MaxSize).First().MaxSize / 8;
+            }
+        }
+
+        public Crypt()
+        {
+        }
+
+        public void GenerateSalt()
+        {
+            Salt = RandomBytes(MaxKeySize);
+            Key = null;
+        }
+
+        public void GeneratePassword(string Password, int Difficulty = 50000)
+        {
+            this.Difficulty = Difficulty;
+            if (Salt == null)
+            {
+                GenerateSalt();
+            }
+            Key = DeriveBytes(Password, MaxKeySize, Salt, Difficulty);
+        }
+
+        /// <summary>
+        /// Encrypts a stream
+        /// </summary>
+        /// <param name="Input">Source stream</param>
+        /// <param name="Output">Output stream</param>
+        /// <returns>true, if successfull</returns>
+        /// <remarks>Output stream must be seekable</remarks>
+        public CryptResult Encrypt(Stream Input, Stream Output)
+        {
+            if (Key == null || Salt == null)
             {
                 return CryptResult.PasswordInvalid;
             }
-            var Header = GetHeader(Filename);
-            //If the file is encrypted already you can just move it
-            //We should probably check the password in the future however
-            if (Header.Valid)
+            if (!Input.CanRead)
             {
-                return CryptResult.InvalidFileState;
+                return CryptResult.StreamCantRead;
+            }
+            if (!Output.CanWrite)
+            {
+                return CryptResult.StreamCantWrite;
+            }
+            if (!Output.CanSeek)
+            {
+                return CryptResult.IOError;
             }
             else
             {
                 using (Rijndael R = Rijndael.Create())
                 {
-                    Header = new CryptHeader();
+                    var Header = new CryptHeader();
                     Header.Valid = true;
+                    Header.Cycles = Difficulty;
                     R.GenerateIV();
                     Header.IV = R.IV;
-                    //Finds the largest keysize. This is in bits, not bytes so we divide by 8.
-                    int KeySize = R.LegalKeySizes.OrderByDescending(m => m.MaxSize).First().MaxSize / 8;
                     //Randomly generate a salt for each encryption task.
                     //This makes the password different for each file even if the source file and password are identical.
-                    Header.Salt = RandomBytes(KeySize);
-                    //Get the key
-                    byte[] Key = DeriveBytes(Password, KeySize, Header.Salt);
+                    Header.Salt = Salt;
                     //Get Hash for password verification.
                     //This hash allows us to check if a user supplied the correct password for decryption.
                     //This should not be insecure as it still goes through the password generator and thus is very slow.
@@ -196,197 +234,41 @@ namespace crypt
                     //Placeholder for the File hash. When decrypting, this is used to verify integrity.
                     Header.FileHash = new byte[256 / 8];
                     long HashPos = 0;
-                    FileStream IN, FS;
                     CryptoStream CS;
 
-                    try
-                    {
-                        IN = File.OpenRead(Filename);
-                    }
-                    catch
-                    {
-                        return CryptResult.FileCantOpen;
-                    }
+                    Header.WriteTo(Output);
+                    HashPos = Output.Position - Header.FileHash.Length - sizeof(int)/*Header.Cycles*/;
 
                     try
                     {
-                        FS = File.Create(DestinationName);
+                        CS = new CryptoStream(Output, R.CreateEncryptor(Key, R.IV), CryptoStreamMode.Write);
                     }
                     catch
                     {
-                        IN.Close();
-                        IN.Dispose();
-                        return CryptResult.FileCantCreate;
+                        return CryptResult.CryptoStreamError;
                     }
 
-                    using (IN)
+                    using (CS)
                     {
-                        using (FS)
+                        using (var Hasher = (SHA256)HashAlgorithm.Create(HASHALG))
                         {
-                            Header.WriteTo(FS);
-                            HashPos = FS.Position - Header.FileHash.Length;
-
-                            try
+                            int readed = 0;
+                            byte[] Buffer = new byte[R.BlockSize * 10];
+                            do
                             {
-                                CS = new CryptoStream(FS, R.CreateEncryptor(Key, R.IV), CryptoStreamMode.Write);
-                            }
-                            catch
-                            {
-                                return CryptResult.CryptoStreamError;
-                            }
-
-                            using (CS)
-                            {
-                                using (var Hasher = (SHA256)HashAlgorithm.Create(HASHALG))
-                                {
-                                    int readed = 0;
-                                    byte[] Buffer = new byte[R.BlockSize * 10];
-                                    do
-                                    {
-                                        try
-                                        {
-                                            readed = IN.Read(Buffer, 0, Buffer.Length);
-                                        }
-                                        catch
-                                        {
-                                            return CryptResult.IOError;
-                                        }
-                                        if (readed > 0)
-                                        {
-                                            try
-                                            {
-                                                CS.Write(Buffer, 0, readed);
-                                            }
-                                            catch (IOException)
-                                            {
-                                                return CryptResult.IOError;
-                                            }
-                                            catch
-                                            {
-                                                return CryptResult.CryptoStreamError;
-                                            }
-
-                                            if (IN.Position == IN.Length)
-                                            {
-                                                var temp = Hasher.TransformFinalBlock(Buffer, 0, readed);
-                                            }
-                                            else
-                                            {
-                                                Hasher.TransformBlock(Buffer, 0, readed, Buffer, 0);
-                                            }
-                                        }
-                                    } while (readed > 0);
-                                    Header.FileHash = CreateHMAC(Key, (byte[])Hasher.Hash.Clone());
-                                }
                                 try
                                 {
-                                    CS.FlushFinalBlock();
-                                }
-                                catch (IOException)
-                                {
-                                    return CryptResult.IOError;
-                                }
-                                catch
-                                {
-                                    return CryptResult.CryptoStreamError;
-                                }
-                                //Store File hash and seek back to the end
-                                try
-                                {
-                                    FS.Flush();
-                                    FS.Seek(HashPos, SeekOrigin.Begin);
-                                    FS.Write(Header.FileHash, 0, Header.FileHash.Length);
-                                    FS.Flush();
-                                    FS.Seek(0, SeekOrigin.End);
+                                    readed = Input.Read(Buffer, 0, Buffer.Length);
                                 }
                                 catch
                                 {
                                     return CryptResult.IOError;
                                 }
-                            }
-                        }
-                    }
-                }
-            }
-            return CryptResult.Success;
-        }
-
-        /// <summary>
-        /// Decrypts a file
-        /// </summary>
-        /// <param name="Filename">Encrypted file</param>
-        /// <param name="DestinationName">Decrypted file</param>
-        /// <param name="Password">User supplied password</param>
-        /// <returns>true, if successfull</returns>
-        /// <remarks>Will neither delete source on success nor destination on error</remarks>
-        public static CryptResult DecryptFile(string Filename, string DestinationName, string Password)
-        {
-            if (string.IsNullOrEmpty(Password))
-            {
-                return CryptResult.PasswordInvalid;
-            }
-            var Header = GetHeader(Filename);
-            if (!Header.Valid)
-            {
-                return File.Exists(Filename) ? CryptResult.InvalidFileState : CryptResult.FileCantOpen;
-            }
-            using (Rijndael R = Rijndael.Create())
-            {
-                int KeySize = R.LegalKeySizes.OrderByDescending(m => m.MaxSize).First().MaxSize / 8;
-                FileStream IN, FS;
-                CryptoStream CS;
-
-                try
-                {
-                    IN = File.OpenRead(Filename);
-                    IN.Seek(Header.GetSize(), SeekOrigin.Begin);
-                }
-                catch
-                {
-                    return CryptResult.FileCantOpen;
-                }
-
-                try
-                {
-                    FS = File.Create(DestinationName);
-                }
-                catch
-                {
-                    IN.Close();
-                    IN.Dispose();
-                    return CryptResult.FileCantCreate;
-                }
-
-                using (IN)
-                {
-                    byte[] Key = DeriveBytes(Password, KeySize, Header.Salt);
-
-                    if (!CheckPasswordBytes(Key, Header.KeyHash))
-                    {
-                        return CryptResult.PasswordInvalid;
-                    }
-
-                    using (FS)
-                    {
-                        try
-                        {
-                            CS = new CryptoStream(IN, R.CreateDecryptor(Key, Header.IV), CryptoStreamMode.Read);
-                        }
-                        catch
-                        {
-                            return CryptResult.CryptoStreamError;
-                        }
-                        using (CS)
-                        {
-                            using (var Hasher = (SHA256)HashAlgorithm.Create(HASHALG))
-                            {
-                                byte[] Data = new byte[R.BlockSize * 100];
-                                int readed = 0;
-                                do
+                                if (readed > 0)
                                 {
                                     try
                                     {
-                                        readed = CS.Read(Data, 0, Data.Length);
+                                        CS.Write(Buffer, 0, readed);
                                     }
                                     catch (IOException)
                                     {
@@ -396,32 +278,135 @@ namespace crypt
                                     {
                                         return CryptResult.CryptoStreamError;
                                     }
-                                    if (readed > 0)
+
+                                    if (Input.Position == Input.Length)
                                     {
-                                        try
-                                        {
-                                            FS.Write(Data, 0, readed);
-                                        }
-                                        catch
-                                        {
-                                            return CryptResult.IOError;
-                                        }
-                                        //Always read a multiple of the supported blocksize to avoid problems with readahead
-                                        if (IN.Position == IN.Length)
-                                        {
-                                            Hasher.TransformFinalBlock(Data, 0, readed);
-                                        }
-                                        else
-                                        {
-                                            Hasher.TransformBlock(Data, 0, readed, Data, 0);
-                                        }
+                                        var temp = Hasher.TransformFinalBlock(Buffer, 0, readed);
                                     }
-                                } while (readed > 0);
-                                if (!VerifyHMAC(Key, Header.FileHash, Hasher.Hash))
+                                    else
+                                    {
+                                        Hasher.TransformBlock(Buffer, 0, readed, Buffer, 0);
+                                    }
+                                }
+                            } while (readed > 0);
+                            Header.FileHash = CreateHMAC(Key, (byte[])Hasher.Hash.Clone());
+                        }
+                        try
+                        {
+                            CS.FlushFinalBlock();
+                        }
+                        catch (IOException)
+                        {
+                            return CryptResult.IOError;
+                        }
+                        catch
+                        {
+                            return CryptResult.CryptoStreamError;
+                        }
+                        //Store File hash and seek back to the end
+                        try
+                        {
+                            Output.Flush();
+                            long CurrentPos = Output.Position;
+                            Output.Seek(HashPos, SeekOrigin.Begin);
+                            Output.Write(Header.FileHash, 0, Header.FileHash.Length);
+                            Output.Flush();
+                            Output.Seek(Output.Position, SeekOrigin.Begin);
+                        }
+                        catch
+                        {
+                            return CryptResult.IOError;
+                        }
+                    }
+                }
+            }
+            return CryptResult.Success;
+        }
+
+        /// <summary>
+        /// Decrypts a stream
+        /// </summary>
+        /// <param name="Input">Input stream</param>
+        /// <param name="Output">Output stream</param>
+        /// <returns>true, if successfull</returns>
+        public CryptResult Decrypt(Stream Input, Stream Output, string Password)
+        {
+            if (!Input.CanRead)
+            {
+                return CryptResult.StreamCantRead;
+            }
+            if (!Output.CanWrite)
+            {
+                return CryptResult.StreamCantWrite;
+            }
+            var Header = GetHeader(Input);
+            if (!Header.Valid)
+            {
+                return CryptResult.InvalidFileState;
+            }
+            using (Rijndael R = Rijndael.Create())
+            {
+                CryptoStream CS;
+
+                byte[] Key = DeriveBytes(Password, MaxKeySize, Header.Salt, Header.Cycles);
+
+                if (!CheckPasswordBytes(Key, Header.KeyHash))
+                {
+                    return CryptResult.PasswordInvalid;
+                }
+
+                try
+                {
+                    CS = new CryptoStream(Input, R.CreateDecryptor(Key, Header.IV), CryptoStreamMode.Read);
+                }
+                catch
+                {
+                    return CryptResult.CryptoStreamError;
+                }
+                using (CS)
+                {
+                    using (var Hasher = (SHA256)HashAlgorithm.Create(HASHALG))
+                    {
+                        byte[] Data = new byte[R.BlockSize * 100];
+                        int readed = 0;
+                        do
+                        {
+                            try
+                            {
+                                readed = CS.Read(Data, 0, Data.Length);
+                            }
+                            catch (IOException)
+                            {
+                                return CryptResult.IOError;
+                            }
+                            catch
+                            {
+                                return CryptResult.CryptoStreamError;
+                            }
+                            if (readed > 0)
+                            {
+                                try
                                 {
-                                    return CryptResult.FileHashInvalid;
+                                    Output.Write(Data, 0, readed);
+                                }
+                                catch
+                                {
+                                    return CryptResult.IOError;
+                                }
+                                //Always read a multiple of the supported blocksize to avoid problems with readahead
+                                if (Input.Position == Input.Length)
+                                {
+                                    Hasher.TransformFinalBlock(Data, 0, readed);
+                                }
+                                else
+                                {
+                                    Hasher.TransformBlock(Data, 0, readed, Data, 0);
                                 }
                             }
+                        } while (readed > 0);
+                        if (!VerifyHMAC(Key, Header.FileHash, Hasher.Hash))
+                        {
+                            return CryptResult.FileHashInvalid;
                         }
                     }
                 }
@@ -517,19 +502,30 @@ namespace crypt
         /// <returns>Crypt header. Check the valid property before using any of its values</returns>
         public static CryptHeader GetHeader(string Filename)
         {
+            using (var FS = File.OpenRead(Filename))
+            {
+                return GetHeader(FS);
+            }
+        }
+
+        /// <summary>
+        /// Tries to read the crypt header from a stream
+        /// </summary>
+        /// <param name="Input">Input stream</param>
+        /// <returns>Crypt header.</returns>
+        /// <remarks>This will leave the stream as-is</remarks>
+        public static CryptHeader GetHeader(Stream Input)
+        {
+            var H = new CryptHeader();
             try
             {
-                using (var FS = File.OpenRead(Filename))
-                {
-                    var H = new CryptHeader();
-                    H.ReadFrom(FS);
-                    return H;
-                }
+                H.ReadFrom(Input);
             }
             catch
             {
                 return new CryptHeader();
             }
+            return H;
         }
 
         /// <summary>

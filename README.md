@@ -16,6 +16,8 @@ As of now, the source file is not deleted upon success.
 - Crypt appends `.cry` to encrypted files filenames and removes it when decrypting.
 - Crypt will not encrypt already encrypted files again.
 
+*The `.cry` removal at the moment is stupid. Crypt will just cut off the last 4 chars of the name.*
+
 ## Header structure
 
 The header is structured as this:
@@ -27,11 +29,13 @@ The header is structured as this:
 | Key hash + 4    | Key hash              |
 | IV + 4          | Initialization vector |
 | File hash + 4   | Source File hash      |
+| Difficulty      | 32Bit integer         |
 
-Apart from the first field, all fields are prefixed with a 4 byte integer that specifies their length.
-The length prefix is stored in little endian.
+Apart from the first field, all byte array fields are prefixed with a 4 byte integer that specifies their length.
+The length prefix is stored in little endian and is located directly before the content it describes.
 The prefixed data is stored as raw byte arrays.
 The encrypted content is directly after the header without length prefixing.
+The Difficulty is the number fed into the PBKDF2 password generator.
 
 ### Description of header fields
 
@@ -78,6 +82,13 @@ The hash is generated using an SHA256-HMAC of the original hash and the Salt.
 Because the salt is different for each file, this will also different each time the same file is encrypted.
 We do not use the unmodified source file hash as it would allow possible lookup of the source file.
 
+#### Difficulty
+
+The Difficulty is the number fed into the PBKDF2 password generator.
+The mimimum recommended difficulty is 1000.
+This application supports 10 times or 50 times that value.
+This only results in a speed penalty for the password generator and thus is static regardless of file size.
+
 ## Security
 
 ### Password input
@@ -94,12 +105,19 @@ either using the respective functions of components in use or the `RNGCryptoServ
 
 #### Password
 
-The method to get the Key bytes from the password in use is PBKDF2 using 50'000 rounds.
+The method to get the Key bytes from the password in use is PBKDF2 using 50'000 rounds by default.
 This algorithm is specified in [RFC 2898](https://www.rfc-editor.org/info/rfc2898).
 
-Usually only 10'000 or less rounds are chosen.
+Usually only 1'000 rounds are chosen (the minimum recommended value).
 A higher number of rounds slows down each attempt to get the key bytes,
 but will not have an impact on the performance of the crypto stream.
+When encrypting the user is asked if he wants safe or fast encryption.
+The algorithm strenght is not changed but rather the difficulty is modified.
+
+- Fast is 10'000
+- Safe is 50'000.
+
+By default, "Safe" is recommended but it has a massive impact when encrypting many files.
 
 #### File Hash
 

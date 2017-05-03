@@ -8,15 +8,10 @@ namespace crypt
     {
         static void Main(string[] args)
         {
-            //args = new string[] { "/e", @"C:\Temp\media\__test.mp3" };
-            args = new string[] { "/d", @"C:\Temp\media\__test.mp3.cry" };
 
 #if DEBUG
-            using (var FS = File.OpenRead(args[1]))
-            {
-                var Hash = Crypt.Hash(FS);
-                Console.Error.WriteLine(string.Join("-", Hash.Select(m => m.ToString("X2")).ToArray()));
-            }
+            args = new string[] { "/e", @"C:\temp\media" };
+            //args = new string[] { "/d", @"C:\temp\media\CRY" };
 #endif
 
             if (args.Length == 0 || args.Contains("/?"))
@@ -48,23 +43,46 @@ namespace crypt
                         Console.Error.WriteLine("Aborting on empty password");
                         return;
                     }
+
+                    Console.Error.WriteLine(@"Fast or safe?
+Fast will use a smaller difficulty value in the password processor.
+Encrypting and decrypting is faster this way.
+The algorithm type is the same but password brute force is faster.
+The speed penalty is the same regardless of file size.
+Fast is not unsafe.
+The minimum recommended difficulty in the standard is 1000,
+we use 10 times that for 'Fast' and 50 times that for 'Safe'");
+                    Console.ForegroundColor = ConsoleColor.White;
+                    int Cycles = Ask("Fast or Safe?", "FS") == 'F' ? 10000 : 50000;
+                    Console.ResetColor();
+
+                    var C = new Crypt();
                     foreach (var F in Sources)
                     {
                         Console.Error.Write($"{F}...");
-                        switch (Crypt.EncryptFile(F, $"{F}.cry", Pass))
+                        C.GenerateSalt();
+                        C.GeneratePassword(Pass, Cycles);
+                        using (var IN = File.OpenRead(F))
                         {
-                            case Crypt.CryptResult.Success:
-                                Console.ForegroundColor = ConsoleColor.Green;
-                                Console.Error.WriteLine("[DONE]");
-                                break;
-                            default:
-                                if (File.Exists($"{F}.cry"))
+                            using (var OUT = File.Create($"{F}.cry"))
+                            {
+                                switch (C.Encrypt(IN, OUT))
                                 {
-                                    File.Delete($"{F}.cry");
+                                    case Crypt.CryptResult.Success:
+                                        Console.ForegroundColor = ConsoleColor.Green;
+                                        Console.Error.WriteLine("[DONE]");
+                                        break;
+                                    default:
+                                        OUT.Close();
+                                        if (File.Exists($"{F}.cry"))
+                                        {
+                                            File.Delete($"{F}.cry");
+                                        }
+                                        Console.ForegroundColor = ConsoleColor.Red;
+                                        Console.Error.WriteLine("[ERROR]");
+                                        break;
                                 }
-                                Console.ForegroundColor = ConsoleColor.Red;
-                                Console.Error.WriteLine("[ERROR]");
-                                break;
+                            }
                         }
                         Console.ResetColor();
                     }
@@ -102,24 +120,32 @@ namespace crypt
                         Console.Error.WriteLine("Aborting on empty password");
                         return;
                     }
+                    var C = new Crypt();
                     foreach (var F in Sources)
                     {
                         string Dest = F.Substring(0, F.Length - 4);
                         Console.Error.Write($"{F}...");
-                        switch (Crypt.DecryptFile(F, Dest, Pass))
+                        using (var IN = File.OpenRead(F))
                         {
-                            case Crypt.CryptResult.Success:
-                                Console.ForegroundColor = ConsoleColor.Green;
-                                Console.Error.WriteLine("[DONE]");
-                                break;
-                            default:
-                                if (File.Exists(Dest))
+                            using (var OUT = File.Create(Dest))
+                            {
+                                switch (C.Decrypt(IN, OUT, Pass))
                                 {
-                                    File.Delete(Dest);
+                                    case Crypt.CryptResult.Success:
+                                        Console.ForegroundColor = ConsoleColor.Green;
+                                        Console.Error.WriteLine("[DONE]");
+                                        break;
+                                    default:
+                                        OUT.Close();
+                                        if (File.Exists(Dest))
+                                        {
+                                            File.Delete(Dest);
+                                        }
+                                        Console.ForegroundColor = ConsoleColor.Red;
+                                        Console.Error.WriteLine("[ERROR]");
+                                        break;
                                 }
-                                Console.ForegroundColor = ConsoleColor.Red;
-                                Console.Error.WriteLine("[ERROR]");
-                                break;
+                            }
                         }
                         Console.ResetColor();
                     }
@@ -141,6 +167,22 @@ namespace crypt
             Console.Error.WriteLine("#END");
             Console.ReadKey(true);
 #endif
+        }
+
+        private static char Ask(string Text, string Values)
+        {
+            char[] Available = Values.ToCharArray();
+            Console.Error.Write("{0} [{1}]?", Text, string.Join("/", Available));
+            Available = Available.Select(m => m.ToString().ToLower()[0]).ToArray();
+            while (true)
+            {
+                var C = Console.ReadKey(true).KeyChar;
+                if (Available.Contains(C.ToString().ToLower()[0]))
+                {
+                    Console.Error.WriteLine();
+                    return C;
+                }
+            }
         }
 
         /// <summary>
