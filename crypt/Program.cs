@@ -33,11 +33,17 @@ namespace crypt
                         ShowHelp();
                         return;
                     }
-                    //Create a set of source and destination names
-                    string[] Sources = Directory.Exists(Source) ? Directory.GetFiles(Source, "*.*", SearchOption.AllDirectories) : new string[] { Source };
+                    var Sources = ScanDir(Source);
+                    if (Sources == null)
+                    {
+                        return;
+                    }
+
                     Console.Error.WriteLine($"Ready to encrypt {Sources.Length} files");
                     Console.Write("Password: ");
+                    Console.ForegroundColor = ConsoleColor.White;
                     string Pass = ReadPassword();
+                    Console.ResetColor();
                     if (string.IsNullOrEmpty(Pass))
                     {
                         Console.Error.WriteLine("Aborting on empty password");
@@ -66,11 +72,22 @@ we use 10 times that for 'Fast' and 50 times that for 'Safe'");
                         {
                             using (var OUT = File.Create($"{F}.cry"))
                             {
-                                switch (C.Encrypt(IN, OUT))
+                                Crypt.CryptResult CR;
+                                switch (CR = C.Encrypt(IN, OUT))
                                 {
                                     case Crypt.CryptResult.Success:
-                                        Console.ForegroundColor = ConsoleColor.Green;
-                                        Console.Error.WriteLine("[DONE]");
+                                        IN.Close();
+                                        try
+                                        {
+                                            File.Delete(F);
+                                            Console.ForegroundColor = ConsoleColor.Green;
+                                            Console.Error.WriteLine("[DONE]");
+                                        }
+                                        catch
+                                        {
+                                            Console.ForegroundColor = ConsoleColor.Yellow;
+                                            Console.Error.WriteLine("[DELETE ERROR]");
+                                        }
                                         break;
                                     default:
                                         OUT.Close();
@@ -79,7 +96,7 @@ we use 10 times that for 'Fast' and 50 times that for 'Safe'");
                                             File.Delete($"{F}.cry");
                                         }
                                         Console.ForegroundColor = ConsoleColor.Red;
-                                        Console.Error.WriteLine("[ERROR]");
+                                        Console.Error.WriteLine($"[ERROR: {CR}]");
                                         break;
                                 }
                             }
@@ -110,14 +127,19 @@ we use 10 times that for 'Fast' and 50 times that for 'Safe'");
                         ShowHelp();
                         return;
                     }
-                    //Create a set of source and destination names
-                    string[] Sources = Directory.Exists(Source) ? Directory.GetFiles(Source, "*.cry", SearchOption.AllDirectories) : new string[] { Source };
+                    var Sources = ScanDir(Source, "*.cry");
+                    if (Sources == null)
+                    {
+                        return;
+                    }
                     Console.Error.WriteLine($"Ready to decrypt {Sources.Length} files");
                     Console.Write("Password: ");
                     string Pass = ReadPassword();
                     if (string.IsNullOrEmpty(Pass))
                     {
+                        Console.ForegroundColor = ConsoleColor.Red;
                         Console.Error.WriteLine("Aborting on empty password");
+                        Console.ResetColor();
                         return;
                     }
                     var C = new Crypt();
@@ -129,11 +151,22 @@ we use 10 times that for 'Fast' and 50 times that for 'Safe'");
                         {
                             using (var OUT = File.Create(Dest))
                             {
-                                switch (C.Decrypt(IN, OUT, Pass))
+                                Crypt.CryptResult CR;
+                                switch (CR = C.Decrypt(IN, OUT, Pass))
                                 {
                                     case Crypt.CryptResult.Success:
-                                        Console.ForegroundColor = ConsoleColor.Green;
-                                        Console.Error.WriteLine("[DONE]");
+                                        IN.Close();
+                                        try
+                                        {
+                                            File.Delete(F);
+                                            Console.ForegroundColor = ConsoleColor.Green;
+                                            Console.Error.WriteLine("[DONE]");
+                                        }
+                                        catch
+                                        {
+                                            Console.ForegroundColor = ConsoleColor.Yellow;
+                                            Console.Error.WriteLine("[DELETE ERROR]");
+                                        }
                                         break;
                                     default:
                                         OUT.Close();
@@ -142,7 +175,7 @@ we use 10 times that for 'Fast' and 50 times that for 'Safe'");
                                             File.Delete(Dest);
                                         }
                                         Console.ForegroundColor = ConsoleColor.Red;
-                                        Console.Error.WriteLine("[ERROR]");
+                                        Console.Error.WriteLine($"[ERROR {CR}]");
                                         break;
                                 }
                             }
@@ -167,6 +200,27 @@ we use 10 times that for 'Fast' and 50 times that for 'Safe'");
             Console.Error.WriteLine("#END");
             Console.ReadKey(true);
 #endif
+        }
+
+        private static string[] ScanDir(string Dir, string Pattern = "*.*")
+        {
+            Console.Error.Write("Scanning Files...");
+            //Create a set of source and destination names
+            string[] Sources = null;
+            try
+            {
+                Sources = Directory.Exists(Dir) ? Directory.GetFiles(Dir, Pattern, SearchOption.AllDirectories) : new string[] { Dir };
+                Console.ForegroundColor = ConsoleColor.Green;
+                Console.Error.WriteLine("[DONE]");
+            }
+            catch (Exception ex)
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.Error.WriteLine("[ERROR]");
+                Console.Error.WriteLine($"Can't scan directory structure: {ex}");
+            }
+            Console.ResetColor();
+            return Sources;
         }
 
         private static char Ask(string Text, string Values)
