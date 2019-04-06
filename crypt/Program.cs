@@ -8,12 +8,10 @@ namespace crypt
     {
         static void Main(string[] args)
         {
-
 #if DEBUG
             args = new string[] { "/e", @"C:\temp\media" };
             //args = new string[] { "/d", @"C:\temp\media\CRY" };
 #endif
-
             if (args.Length == 0 || args.Contains("/?"))
             {
                 ShowHelp();
